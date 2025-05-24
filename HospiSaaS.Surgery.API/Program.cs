@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using HospiSaaS.Application.Interfaces;
 using HospiSaaS.Application.Services;
 using HospiSaaS.Domain.Repositories;
@@ -9,19 +11,22 @@ using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Register services for DI
 builder.Services.AddSingleton<INotifier, ConsoleNotifier>();
 builder.Services.AddSingleton<IHospitalRepository, InMemoryHospitalRepository>();
 builder.Services.AddSingleton<SchedulingService>();
-builder.Services.AddHostedService<QueueProcessorHostedService>();
+builder.Services.AddHostedService<WaitingListProcessorHostedService>();
 
-builder.Services.AddControllers();
+builder.Services
+    .AddControllers()
+    .AddJsonOptions(o =>
+        o.JsonSerializerOptions.Converters.Add(
+            new JsonStringEnumConverter(JsonNamingPolicy.CamelCase)));
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
-// Seed data
 SeedSampleData(app.Services);
 
 if (app.Environment.IsDevelopment()) {

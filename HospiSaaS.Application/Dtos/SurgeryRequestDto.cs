@@ -2,9 +2,6 @@
 
 namespace HospiSaaS.Application.Dtos
 {
-    public class SurgeryRequestDto {
-        public Guid DoctorId { get; set; }
-        public SurgeryType SurgeryType { get; set; }
-        public DateTime DesiredTime { get; set; }
-    }
+    public record SurgeryRequestDto(Guid DoctorId, SurgeryType SurgeryType, DateTime DesiredTimeUtc);
+
 }

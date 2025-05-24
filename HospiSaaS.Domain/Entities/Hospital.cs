@@ -3,91 +3,117 @@ using HospiSaaS.Domain.ValueObjects;
 
 namespace HospiSaaS.Domain.Entities;
 
-public class Hospital 
+/// <summary>
+///     Aggregate root that owns doctors, ORs, schedule and waiting-list.
+/// </summary>
+public sealed class Hospital
 {
-    public Guid Id { get; private set; }
-    public string Name { get; private set; }
+    public Guid Id { get; private init; }
+    public string Name { get; private init; } = string.Empty;
 
-    private List<Doctor> _doctors = [];
-    private List<OperatingRoom> _operatingRooms = [];
-    private List<SurgeryRequest> _pendingRequests = [];
-    private List<SurgeryRequest> _scheduledSurgeries = [];
-    
-    public IReadOnlyCollection<SurgeryRequest> PendingRequests => _pendingRequests.AsReadOnly();
-    public IReadOnlyCollection<SurgeryRequest> ScheduledSurgeries => _scheduledSurgeries.AsReadOnly();
-    public SurgeryRequest ScheduleSurgery(Guid doctorId, SurgeryType type, DateTime dateTime) {
+    private readonly List<Doctor> _doctors = new();
+    private readonly List<OperatingRoom> _rooms = new();
+    private readonly List<SurgeryRequest> _waitingList = new();
+    private readonly List<SurgeryRequest> _scheduled = new();
 
-        var doctor = _doctors.FirstOrDefault(d => d.Id == doctorId);
-        if (doctor == null) throw new DomainException($"Doctor {doctorId} not found in hospital {Name}");
-        if (doctor.Specialty != type) {
-            throw new DomainException($"Doctor's specialty {doctor.Specialty} does not match requested surgery type {type}");
-        }
-        
-        if (dateTime < DateTime.Now || dateTime > DateTime.Now.AddDays(7)) {
-            throw new DomainException("Surgery time must be within the next 7 days");
-        }
-        var hour = dateTime.TimeOfDay;
-        if (hour < TimeSpan.FromHours(10) || hour >= TimeSpan.FromHours(18)) {
-            throw new DomainException("Surgery time must be between 10:00 and 18:00");
-        }
+    public IReadOnlyCollection<SurgeryRequest> WaitingList => _waitingList.AsReadOnly();
+    public IReadOnlyCollection<SurgeryRequest> Scheduled => _scheduled.AsReadOnly();
 
-        var assignedRoom = _operatingRooms
-            .Where(r => r.CanPerform(type))
-            .FirstOrDefault(r => r.IsFreeAt(dateTime));
+    private readonly object _waitingLock = new();
 
-        if (assignedRoom != null) {
-            assignedRoom.Book(dateTime);
-            var request = new SurgeryRequest(Guid.NewGuid(), doctorId, type, dateTime, SurgeryStatus.Scheduled, assignedRoom.Id);
-            _scheduledSurgeries.Add(request);
-            return request;
-        } else {
-            var request = new SurgeryRequest(Guid.NewGuid(), doctorId, type, dateTime, SurgeryStatus.Pending);
-            _pendingRequests.Add(request);
-            return request;
-        }
-    }
-
-
-    public void ProcessPendingRequests() 
+    private Hospital()
     {
-        for (var i = _pendingRequests.Count - 1; i >= 0; i--) {
-            var req = _pendingRequests[i];
-            var availableRoom = _operatingRooms
-                .Where(r => r.CanPerform(req.Type))
-                .FirstOrDefault(r => r.IsFreeAt(req.ScheduledTime));
-            
-            if (availableRoom != null) {
-                availableRoom.Book(req.ScheduledTime);
-                req.MarkScheduled(availableRoom.Id);
-                _scheduledSurgeries.Add(req);
-                _pendingRequests.RemoveAt(i);
-            }
-        }
     }
-    
+
     public static Hospital Create(Guid id, string name)
     {
         if (string.IsNullOrWhiteSpace(name))
-            throw new ArgumentException("Hospital name is required.");
+            throw new ArgumentException("Hospital name is required.", nameof(name));
 
-        return new Hospital
+        return new Hospital { Id = id, Name = name };
+    }
+
+    public void AddDoctor(Doctor d)
+    {
+        if (d.HospitalId != Id) throw new InvalidOperationException("Doctor belongs to another hospital.");
+        _doctors.Add(d);
+    }
+
+    public void AddOperatingRoom(OperatingRoom r)
+    {
+        if (r.HospitalId != Id) throw new InvalidOperationException("OR belongs to another hospital.");
+        _rooms.Add(r);
+    }
+
+    public SurgeryRequest RequestSurgery(Guid doctorId, SurgeryType type, DateTime startUtc)
+    {
+        var doctor = _doctors.FirstOrDefault(d => d.Id == doctorId)
+                     ?? throw new DomainException("Doctor not found in hospital.");
+
+        if (doctor.Specialty != type)
+            throw new DomainException("Doctor's specialty does not match requested surgery type.");
+
+        ValidateTime(startUtc);
+
+        foreach (var room in _rooms.Where(r => r.CanPerform(type)))
+            if (room.TryBook(type, startUtc))
+            {
+                var sched = SurgeryRequest.Scheduled(doctor.Id, type, startUtc, room.Id);
+                _scheduled.Add(sched);
+                return sched;
+            }
+
+        var waiting = SurgeryRequest.Waiting(doctor.Id, type, startUtc);
+        lock (_waitingLock)
         {
-            Id = id,
-            Name = name
-        };
+            _waitingList.Add(waiting);
+        }
+
+        return waiting;
     }
 
-    public void AddDoctor(Doctor doctor)
+    public void ProcessWaitingList()
     {
-        if (doctor.HospitalId != Id)
-            throw new InvalidOperationException("Doctor does not belong to this hospital.");
-        _doctors.Add(doctor);
+        List<SurgeryRequest> snapshot;
+        lock (_waitingLock)
+        {
+            snapshot = _waitingList.ToList();
+        }
+
+        foreach (var req in snapshot)
+        foreach (var room in _rooms.Where(r => r.CanPerform(req.Type)))
+            if (room.TryBook(req.Type, req.DesiredTimeUtc))
+            {
+                lock (_waitingLock)
+                {
+                    _waitingList.Remove(req);
+                }
+
+                req.MarkScheduled(room.Id);
+                _scheduled.Add(req);
+
+                break;
+            }
     }
 
-    public void AddOperatingRoom(OperatingRoom or)
+    public int GetWaitingPosition(Guid requestId)
     {
-        if (or.HospitalId != Id)
-            throw new InvalidOperationException("Operating room does not belong to this hospital.");
-        _operatingRooms.Add(or);
+        lock (_waitingLock)
+        {
+            var idx = _waitingList.FindIndex(r => r.Id == requestId);
+            return idx < 0 ? -1 : idx + 1;
+        }
+    }
+
+    private static void ValidateTime(DateTime utc)
+    {
+        var local = utc.ToLocalTime();
+
+        if (local < DateTime.Now || local > DateTime.Now.AddDays(7))
+            throw new DomainException("Surgery must be within the next 7 days.");
+
+        var hour = local.TimeOfDay;
+        if (hour < TimeSpan.FromHours(10) || hour >= TimeSpan.FromHours(18))
+            throw new DomainException("Surgery must start between 10:00 and 18:00.");
     }
 }

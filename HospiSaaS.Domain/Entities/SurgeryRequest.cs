@@ -2,27 +2,40 @@ using HospiSaaS.Domain.ValueObjects;
 
 namespace HospiSaaS.Domain.Entities;
 
-public enum SurgeryStatus { Pending, Scheduled }
-
-public class SurgeryRequest {
-    public Guid Id { get; private set; }
-    public Guid DoctorId { get; private set; }
-    public SurgeryType Type { get; private set; }
-    public DateTime ScheduledTime { get; private set; }
+public class SurgeryRequest
+{
+    public Guid Id { get; }
+    public Guid DoctorId { get; }
+    public SurgeryType Type { get; }
+    public DateTime DesiredTimeUtc { get; }
+    public RequestStatus Status { get; private set; }
     public Guid? OperatingRoomId { get; private set; }
-    public SurgeryStatus Status { get; private set; }
-    
-    internal SurgeryRequest(Guid id, Guid doctorId, SurgeryType type, DateTime time, SurgeryStatus status, Guid? roomId = null) {
+
+    private SurgeryRequest(Guid id, Guid doctorId, SurgeryType type,
+        DateTime whenUtc, RequestStatus status, Guid? roomId = null)
+    {
         Id = id;
         DoctorId = doctorId;
         Type = type;
-        ScheduledTime = time;
+        DesiredTimeUtc = whenUtc;
         Status = status;
         OperatingRoomId = roomId;
     }
 
-    internal void MarkScheduled(Guid roomId) {
-        Status = SurgeryStatus.Scheduled;
+    public static SurgeryRequest Waiting(Guid doctorId, SurgeryType type, DateTime whenUtc)
+    {
+        return new SurgeryRequest(Guid.NewGuid(), doctorId, type, whenUtc, RequestStatus.Waiting);
+    }
+
+    public static SurgeryRequest Scheduled(Guid doctorId, SurgeryType type, DateTime whenUtc, Guid roomId)
+    {
+        return new SurgeryRequest(Guid.NewGuid(), doctorId, type, whenUtc, RequestStatus.Scheduled, roomId);
+    }
+
+    public void MarkScheduled(Guid roomId)
+    {
+        if (Status == RequestStatus.Scheduled) return;
+        Status = RequestStatus.Scheduled;
         OperatingRoomId = roomId;
     }
 }

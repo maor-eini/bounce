@@ -1,24 +1,21 @@
+using System.Collections.Concurrent;
 using HospiSaaS.Domain.Entities;
 using HospiSaaS.Domain.Repositories;
 
 namespace HospiSaaS.Infrastructure.Repositories;
 
-public class InMemoryHospitalRepository : IHospitalRepository 
+public sealed class InMemoryHospitalRepository : IHospitalRepository
 {
-    private static readonly Dictionary<Guid, Hospital> _hospitals = new();
+    private readonly ConcurrentDictionary<Guid, Hospital> _store = new();
 
-    public Hospital GetById(Guid hospitalId) {
-        _hospitals.TryGetValue(hospitalId, out var hospital);
-        return hospital;
-    }
-    public IEnumerable<Hospital> GetAll() => _hospitals.Values;
+    public Hospital? GetById(Guid id) =>
+        _store.GetValueOrDefault(id);
 
-    public void Add(Hospital hospital) {
-        _hospitals[hospital.Id] = hospital;
-    }
-    public void Update(Hospital hospital) {
-        _hospitals[hospital.Id] = hospital;
-    }
+    public IEnumerable<Hospital> GetAll() => _store.Values;
 
-    public void Clear() => _hospitals.Clear();
+    public void Add(Hospital hospital)    => _store[hospital.Id] = hospital;
+
+    public void Update(Hospital hospital) => _store[hospital.Id] = hospital;
+    
+    public void Clear() => _store.Clear();
 }
